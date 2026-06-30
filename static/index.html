@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Voice Assistant</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0d0d0f;
+      font-family: 'Courier New', Courier, monospace;
+      color: #e2e8f0;
+    }
+
+    .container {
+      width: 480px;
+      max-width: 92vw;
+      background: #16161a;
+      border: 1px solid #2d2d35;
+      border-radius: 12px;
+      padding: 36px 40px;
+      box-shadow: 0 0 60px rgba(99, 102, 241, 0.08);
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.3px;
+    }
+    .header p {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #64748b;
+      font-family: sans-serif;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #1e1e24;
+      border: 1px solid #2d2d35;
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 24px 0;
+      font-size: 12px;
+      font-family: sans-serif;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #334155; flex-shrink: 0; transition: background .3s;
+    }
+    .dot.idle      { background: #334155; }
+    .dot.connecting{ background: #f59e0b; animation: pulse 1s infinite; }
+    .dot.listening { background: #22c55e; animation: pulse 1s infinite; }
+    .dot.speaking  { background: #6366f1; animation: pulse 1s infinite; }
+    .dot.error     { background: #ef4444; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    #statusText { color: #94a3b8; flex: 1; }
+
+    /* Conversation */
+    #conversation {
+      background: #0d0d0f;
+      border: 1px solid #1e1e24;
+      border-radius: 8px;
+      padding: 14px;
+      height: 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .msg { max-width: 85%; padding: 8px 12px; border-radius: 10px; }
+    .msg.user {
+      align-self: flex-end;
+      background: #6366f1; color: #fff;
+      border-bottom-right-radius: 2px;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: #1e1e24; color: #cbd5e1;
+      border: 1px solid #2d2d35;
+      border-bottom-left-radius: 2px;
+    }
+    .msg .who {
+      display: block; font-size: 9px; text-transform: uppercase;
+      letter-spacing: 1px; opacity: .6; margin-bottom: 3px;
+    }
+    .empty { color: #475569; font-size: 12px; text-align: center; margin: auto; }
+
+    /* Mic button */
+    .controls { margin-top: 24px; display: flex; }
+    #micBtn {
+      flex: 1; padding: 13px 0; border: none; border-radius: 8px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      background: #6366f1; color: #fff; letter-spacing: .3px;
+      transition: background .15s, transform .1s;
+    }
+    #micBtn:hover:not(:disabled) { background: #4f52d9; }
+    #micBtn:active { transform: scale(.98); }
+    #micBtn.live { background: #ef4444; }
+    #micBtn.live:hover { background: #dc2626; }
+    #micBtn:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⬤ AI Voice Assistant</h1>
+      <p>Speak naturally — powered by Deepgram speech &amp; OpenAI.</p>
+    </div>
+
+    <div class="status-bar">
+      <div class="dot idle" id="dot"></div>
+      <span id="statusText">Idle — click the mic to start talking</span>
+    </div>
+
+    <div id="conversation"><div class="empty">Your conversation will appear here.</div></div>
+
+    <div class="controls">
+      <button id="micBtn">🎙 Start talking</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

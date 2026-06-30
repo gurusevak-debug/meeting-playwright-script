@@ -1,0 +1,10 @@
+# Runtime dependencies for the Google Meet bot + Celery worker.
+# The browser + its OS libraries come from the Playwright base image.
+playwright==1.61.0
+websockets
+numpy
+python-dotenv
+celery[redis]
+fastapi
+uvicorn[standard]
+pydantic

@@ -1,0 +1,9 @@
+fastapi
+aiortc
+uvicorn[standard]
+aiofiles
+numpy
+websockets
+python-dotenv
+playwright
+celery[redis]
