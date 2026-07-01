@@ -53,7 +53,7 @@ STT_RATE = 16000          # uplink: browser mic -> Deepgram listen
 TTS_RATE = 48000          # downlink: Deepgram speak -> browser
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-GREETING = "Hi! I'm your AI assistant. What would you like to talk about?"
+GREETING = "Hello I am Meet Bot"
 
 SYSTEM_PROMPT = (
     "You are a friendly, concise voice assistant having a spoken conversation. "

@@ -58,6 +58,8 @@ RECORDINGS_DIR = Path(os.environ.get("RECORDINGS_DIR", "recordings"))
 RECORDINGS_DIR.mkdir(exist_ok=True)
 
 BACKEND_WS_URL = _normalize_ws_url(os.environ.get("BACKEND_WS_URL", "ws://localhost:8000/ws/voice"))
+print(BACKEND_WS_URL)
+
 MEETING_MAX_SECONDS = 60 * 60
 STT_RATE = 16000          # uplink rate to backend
 TTS_RATE = 48000          # downlink rate from backend
