@@ -79,9 +79,7 @@ def _load_env() -> None:
 _load_env()
 DEEPGRAM_KEY = os.environ.get("DEEPGRAM_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-# CYGNUS_JWT_TOKEN = os.environ.get("CYGNUS_JWT_TOKEN", "")
-CYGNUS_JWT_TOKEN="REDACTED"
-
+CYGNUS_JWT_TOKEN = os.environ.get("CYGNUS_JWT_TOKEN", "")
 
 app = FastAPI(title="Conversational AI Assistant", version="1.0.0")
 if STATIC_DIR.exists():
