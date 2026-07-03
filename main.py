@@ -42,6 +42,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect as ws_connect
 
+import http.client
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("assistant")
 
@@ -77,6 +79,9 @@ def _load_env() -> None:
 _load_env()
 DEEPGRAM_KEY = os.environ.get("DEEPGRAM_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+# CYGNUS_JWT_TOKEN = os.environ.get("CYGNUS_JWT_TOKEN", "")
+CYGNUS_JWT_TOKEN="REDACTED"
+
 
 app = FastAPI(title="Conversational AI Assistant", version="1.0.0")
 if STATIC_DIR.exists():
@@ -154,7 +159,57 @@ def openai_reply(history: list[dict]):  # Returns a generator yielding strings
                 except json.JSONDecodeError:
                     continue
 
+# ── CygnusAI (stdlib HTTP, no SDK) ────────────────────────────────────────────────
+def cygnus_reply(message: str):
+    conn = http.client.HTTPSConnection("api.cygnusalpha.one")
 
+    payload = json.dumps({
+
+        "mobile_number": "919887221100",
+        "session_id": "session-guru",
+        "client_session_id": "session-guru",
+        "message": {
+            "text": message,
+            "media": [],
+            "media_url": [],
+            "metadata": {
+            "language": "en",
+            "timezone": "Asia/Calcutta",
+            "device_type": "mobile",
+            "browser": "Chrome",
+            "location": {
+                "latitude": 26.7976704,
+                "longitude": 75.841536
+                }
+            }
+        }
+    })
+
+    headers = {
+        "Authorization" : CYGNUS_JWT_TOKEN,
+        "Content-Type": "application/json",
+        "Cookie": 'GCLB="cf41cd894e697a75"; sessionid=6jht34wfqoyct9t6hxfdvtx7v7vqlv4o'
+    }
+
+    conn.request("POST", "/api/v1/api-controller/invoke-service/guru-sevak-workflow/", payload, headers)
+    res = conn.getresponse()
+
+    while True:
+        line = res.readline()
+
+        if not line:
+            break
+        
+        line = line.decode("utf-8").strip()
+
+        if line:
+            line = json.loads(line)
+            if line.get("text_response"):
+                words = line.get("text_response").split()
+                for word in words:
+                    yield word + " "
+    
+    conn.close()
 # ── Deepgram TTS (WebSocket) ──────────────────────────────────────────────────
 async def deepgram_tts_stream(text: str):
     url = (
@@ -269,7 +324,9 @@ async def voice(client: WebSocket):
         sentence_endings = (".", "?", "!", "\n")
         try:
             # 1. get the generator object from thread
-            gen = await asyncio.to_thread(openai_reply, history)
+            # gen = await asyncio.to_thread(openai_reply, history)
+
+            gen = await asyncio.to_thread(cygnus_reply, user_text)
 
             # 2. we need a helper function to pull the chunks
             def get_next_chunk(g):
