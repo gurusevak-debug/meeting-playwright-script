@@ -231,6 +231,9 @@ async def voice(client: WebSocket):
     utterance: list[str] = []   # buffers finalized words until end-of-turn
     stop = asyncio.Event()
 
+    # Add this right next to 'speaking = {"v": False}'
+    current_turn_task: asyncio.Task | None = None
+
     listen_url = (
         "wss://api.deepgram.com/v1/listen"
         "?model=nova-3&language=en-US&smart_format=true&interim_results=true"
@@ -277,6 +280,8 @@ async def voice(client: WebSocket):
 
             # 3. Looping the chunks asynchronously.
             while True:
+                # Give the event loop a microsecond to breathe and raise CancelledError if requested
+                await asyncio.sleep(0)
                 chunk = await asyncio.to_thread(get_next_chunk, gen)
                 if chunk is None:
                     break
@@ -303,6 +308,10 @@ async def voice(client: WebSocket):
             if buffer.strip():
                 await speak(buffer.strip())
 
+        except asyncio.CancelledError:
+            log.info("handle_turn task was explicitly cancelled.")
+            raise
+
         except Exception as exc:
             log.error("OpenAI error: %s", exc)
             full_reply = "Sorry, I had trouble thinking of a response."
@@ -320,7 +329,7 @@ async def voice(client: WebSocket):
                 if msg["type"] == "websocket.disconnect":
                     break
                 data = msg.get("bytes")
-                if data is not None and not speaking["v"]:
+                if data is not None:
                     await dg.send(data)
         except (WebSocketDisconnect, RuntimeError):
             pass
@@ -354,6 +363,7 @@ async def voice(client: WebSocket):
 
             # Fire a reply when the user has clearly finished talking.
             async def flush_turn() -> None:
+                nonlocal current_turn_task
                 if speaking["v"] or not utterance:
                     return
                 full = " ".join(utterance).strip()
@@ -361,17 +371,31 @@ async def voice(client: WebSocket):
                 if full:
                     log.info("USER: %s", full)
                     await client.send_text(json.dumps({"type": "user", "text": full}))
-                    await handle_turn(full)
+                    
+                    # Instead of awaiting directly, spawn it as a task and save a reference to it
+                    current_turn_task = asyncio.create_task(handle_turn(full))
 
             if etype == "UtteranceEnd":
                 await flush_turn()
                 continue
             if etype != "Results":
                 continue
-            if speaking["v"]:
-                continue
+
             alt = evt["channel"]["alternatives"][0]
             text = alt.get("transcript", "").strip()
+
+            if text:
+                # The user started or is currently speaking!
+                # If the assistant is currently running a task, cancel it immediately
+                if current_turn_task and not current_turn_task.done():
+                    current_turn_task.cancel()
+                    log.info("Interrupted assistant generation because user started talking.")
+                
+                # Tell the browser client to stop playing whatever audio it has queued up
+                if speaking["v"]:
+                    await client.send_text(json.dumps({"type": "stop_audio"}))
+                    # speaking["v"] = False
+
             if text and evt.get("is_final"):
                 utterance.append(text)
             # speech_final = Deepgram detected end-of-speech via endpointing.
