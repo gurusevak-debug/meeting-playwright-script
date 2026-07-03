@@ -106,21 +106,53 @@ class JoinRequest(BaseModel):
 
 
 # ── OpenAI (stdlib HTTP, no SDK) ────────────────────────────────────────────────
-def openai_reply(history: list[dict]) -> str:
-    body = json.dumps({
-        "model": OPENAI_MODEL,
-        "messages": history,
-        "max_tokens": 150,
-        "temperature": 0.7,
-    }).encode()
+def openai_reply(history: list[dict]):  # Returns a generator yielding strings
+    body = json.dumps(
+        {
+            "model": OPENAI_MODEL,
+            "messages": history,
+            "max_tokens": 150,
+            "temperature": 0.7,
+            "stream": True,  # <-- Crucial: tells OpenAI to stream chunks
+        }
+    ).encode()
+
     req = urllib.request.Request(
-        OPENAI_URL, data=body,
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
-                 "Content-Type": "application/json"},
+        OPENAI_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
     )
+
     with urllib.request.urlopen(req, timeout=30) as r:
-        data = json.load(r)
-    return data["choices"][0]["message"]["content"].strip()
+        for line in r:
+            if not line:
+                continue
+
+            # Decode bytes and clean up whitespace
+            line_str = line.decode("utf-8").strip()
+
+            # OpenAI streams data using Server-Sent Events (SSE)
+            if line_str.startswith("data: "):
+                data_payload = line_str[6:]  # Strip out 'data: ' prefix
+
+                # OpenAI signals the end of the stream with 'data: [DONE]'
+                if data_payload == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_payload)
+                    # Safely navigate the nested dictionary for streaming
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                except json.JSONDecodeError:
+                    continue
 
 
 # ── Deepgram TTS (WebSocket) ──────────────────────────────────────────────────
@@ -227,15 +259,56 @@ async def voice(client: WebSocket):
             speaking["v"] = False
 
     async def handle_turn(user_text: str) -> None:
-        history.append({"role": "user", "content": user_text})
+        history.append({"role": "user", "content" : user_text})
+
+        full_reply = ""
+        buffer = ""
+        sentence_endings = (".", "?", "!", "\n")
         try:
-            reply = await asyncio.to_thread(openai_reply, history)
+            # 1. get the generator object from thread
+            gen = await asyncio.to_thread(openai_reply, history)
+
+            # 2. we need a helper function to pull the chunks
+            def get_next_chunk(g):
+                try:
+                    return next(g)
+                except StopIteration:
+                    return None
+
+            # 3. Looping the chunks asynchronously.
+            while True:
+                chunk = await asyncio.to_thread(get_next_chunk, gen)
+                if chunk is None:
+                    break
+                
+                full_reply += chunk
+                buffer += chunk
+                # 4. Speak the chunk immediately as it arrives!
+                # Note: If `speak()` expects full sentences to sound natural, 
+                if any(ending in buffer for ending in sentence_endings):
+                    # Find the rightmost punctuation mark to split on safely
+                    # (Handles cases where multiple punctuation marks or words come in at once)
+                    split_index = max(buffer.rfind(ending) for ending in sentence_endings if ending in buffer)
+
+                    # Extract the complete sentence (including the punctuation)
+                    sentence = buffer[:split_index + 1].strip()
+                    # Keep the remainder in the buffer for the next sentence
+                    buffer = buffer[split_index + 1:]
+
+                    if sentence:
+                        await speak(sentence)
+                
+            # Flush any leftover text remaining in the buffer after the loop finishes
+            # (e.g., if the LLM didn't end its final sentence with a period)
+            if buffer.strip():
+                await speak(buffer.strip())
+
         except Exception as exc:
             log.error("OpenAI error: %s", exc)
-            reply = "Sorry, I had trouble thinking of a response."
-        history.append({"role": "assistant", "content": reply})
-        log.info("ASSISTANT: %s", reply)
-        await speak(reply)
+            full_reply = "Sorry, I had trouble thinking of a response."
+            await speak(full_reply)
+
+        history.append({"role": "assistant", "content": full_reply})
 
     await client.send_text(json.dumps({"type": "ready"}))
     await speak(GREETING)  # greet the user out loud
