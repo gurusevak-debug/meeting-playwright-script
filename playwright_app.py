@@ -18,8 +18,10 @@ Audio topology (PulseAudio):
 
 USAGE
   # 1) start the backend:   uvicorn app:app --port 8000
-  # 2) run the bridge:       python playwright_app.py
+  # 2) run the bridge:       python playwright_app.py <MEET_URL>
+  #    invisible (Xvfb):     python playwright_app.py headless <MEET_URL>
   #    verify audio devices: python playwright_app.py selftest
+The meeting URL is a required command-line argument (not an env var).
 Env: BACKEND_WS_URL (default ws://localhost:8000/ws/voice)
 """
 
@@ -52,8 +54,10 @@ def _normalize_ws_url(url: str) -> str:
     return re.sub(r"^(wss?://)https?://", r"\1", url.strip())
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+# The meeting URL is NOT read from a constant or environment variable — it is
+# passed in as a command-line argument (see __main__ / run_bot). This keeps the
+# bot stateless: one process == one meeting supplied by the caller.
 BOT_PROFILE_DIR = os.environ.get("BOT_PROFILE_DIR", "./bot-profile")
-MEET_URL = os.environ.get("MEET_URL", "https://meet.google.com/whg-brpt-wvz")
 RECORDINGS_DIR = Path(os.environ.get("RECORDINGS_DIR", "recordings"))
 RECORDINGS_DIR.mkdir(exist_ok=True)
 
@@ -64,6 +68,14 @@ MEETING_MAX_SECONDS = 60 * 60
 STT_RATE = 16000          # uplink rate to backend
 TTS_RATE = 48000          # downlink rate from backend
 RECORD_MEETING = True
+
+# ── Solo-watchdog tuning ────────────────────────────────────────────────────────
+# A background worker watches the participant count. If the bot ends up alone in
+# the meeting for SOLO_ALONE_SECONDS, we leave, close the browser and let the
+# process exit (which stops the Docker container when running as PID 1).
+SOLO_CHECK_INTERVAL = 10   # seconds between participant-count checks
+SOLO_ALONE_SECONDS = 60    # leave after being alone this long
+SOLO_GRACE_SECONDS = 45    # wait this long after admission before watching
 
 DISMISS_LABELS = ["Got it", "Dismiss", "Continue without microphone and camera"]
 
@@ -327,12 +339,17 @@ async def join_meeting(page: Page, url: str, admit_timeout_ms: int = 120_000) ->
         await page.get_by_label("Your name").fill("Meeting Notetaker", timeout=3000)
     except Exception:
         pass
-    for label in ["Join now", "Ask to join"]:
-        try:
-            await page.get_by_role("button", name=label).click(timeout=3000)
-            break
-        except Exception:
-            continue
+    # for label in ["Join now", "Ask to join"]:
+    #     try:
+    #         await page.get_by_role("button", name=label).click(timeout=3000)
+    #         break
+    #     except Exception:
+    #         continue
+
+    try:
+        await page.get_by_label("Your name").press("Enter")
+    except Exception:
+        pass
 
     try:
         await page.wait_for_selector('button[aria-label*="Leave call"]', timeout=admit_timeout_ms)
@@ -379,6 +396,81 @@ async def wait_until_meeting_ends(page: Page, max_seconds: int, stop: asyncio.Ev
             print("[INFO] page closed")
             return
     print("[INFO] max duration reached")
+
+
+# ── Solo watchdog: leave when the bot is the only participant left ───────────────
+def _in_docker() -> bool:
+    """Best-effort detection of running inside a container."""
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup") as f:
+            return any(k in f.read() for k in ("docker", "kubepods", "containerd"))
+    except Exception:
+        return False
+
+
+async def _participant_count(page: Page) -> int:
+    """Return the number of people in the call, or -1 if it can't be determined.
+
+    Meet renders one element per participant carrying a data-participant-id
+    (this includes the bot itself). We count the unique ids; a value of 1 means
+    the bot is alone. -1 signals "unknown" so the watchdog stays conservative.
+    """
+    try:
+        return await page.evaluate(
+            """() => {
+                const ids = new Set();
+                document.querySelectorAll('[data-participant-id]').forEach(el => {
+                    const id = el.getAttribute('data-participant-id');
+                    if (id) ids.add(id);
+                });
+                return ids.size ? ids.size : -1;
+            }"""
+        )
+    except Exception:
+        return -1
+
+
+async def monitor_solo(page: Page, stop: asyncio.Event) -> None:
+    """Background worker: end the session once the bot is left alone.
+
+    Runs alongside the audio bridge. After an initial grace period (so we don't
+    bail out before anyone joins), it polls the participant count. If the bot is
+    the only one present for SOLO_ALONE_SECONDS, it sets `stop`, which tears the
+    session down and lets the process exit (stopping the Docker container).
+    """
+    # Wait out the grace period, but stay responsive to an early stop.
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=SOLO_GRACE_SECONDS)
+        return  # stop fired during grace -> nothing to do
+    except asyncio.TimeoutError:
+        pass
+
+    alone_for = 0
+    while not stop.is_set():
+        await asyncio.sleep(SOLO_CHECK_INTERVAL)
+        try:
+            if await page.query_selector('button[aria-label*="Leave call"]') is None:
+                return  # meeting already ended; wait_until_meeting_ends handles it
+        except Exception:
+            return  # page/browser gone
+
+        count = await _participant_count(page)
+        if count < 0:
+            continue  # unknown -> assume the meeting is still active
+
+        if count <= 1:
+            alone_for += SOLO_CHECK_INTERVAL
+            print(f"[SOLO] bot appears alone ({alone_for}s/{SOLO_ALONE_SECONDS}s)")
+            if alone_for >= SOLO_ALONE_SECONDS:
+                print("[SOLO] alone too long -> leaving meeting and shutting down")
+                stop.set()
+                return
+        else:
+            if alone_for:
+                print(f"[SOLO] others present again (participants={count})")
+            alone_for = 0
 
 
 # ── Optional meeting recorder ───────────────────────────────────────────────────
@@ -435,8 +527,9 @@ def start_virtual_display(width: int = 1280, height: int = 720) -> subprocess.Po
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
-async def main(use_xvfb: bool = False, meet_url: str | None = None) -> None:
-    meet_url = meet_url or MEET_URL
+async def main(meet_url: str, use_xvfb: bool = False) -> None:
+    if not meet_url:
+        raise ValueError("meet_url is required (pass it as a command-line argument)")
     tag = uuid.uuid4().hex[:8]
     devices = AudioDevices(tag)
     stop = asyncio.Event()
@@ -459,9 +552,12 @@ async def main(use_xvfb: bool = False, meet_url: str | None = None) -> None:
 
         bridge = asyncio.create_task(run_bridge(devices, stop))
         router = asyncio.create_task(keep_chrome_audio_on_sink(devices.out_sink, stop))
+        # Separate worker: watch the participant count and end the session early
+        # if the bot is left alone (regardless of the 1h/2h max duration).
+        solo = asyncio.create_task(monitor_solo(page, stop))
         await wait_until_meeting_ends(page, MEETING_MAX_SECONDS, stop)
         stop.set()
-        await asyncio.gather(bridge, router, return_exceptions=True)
+        await asyncio.gather(bridge, router, solo, return_exceptions=True)
     except Exception as exc:
         print(f"[ERROR] {exc}")
     finally:
@@ -484,7 +580,7 @@ def run_bot(meet_url: str, use_xvfb: bool = True) -> str:
     Each call uses a unique device tag and its own Xvfb display, so multiple
     sessions can run concurrently in separate worker processes.
     """
-    asyncio.run(main(use_xvfb=use_xvfb, meet_url=meet_url))
+    asyncio.run(main(meet_url=meet_url, use_xvfb=use_xvfb))
     return meet_url
 
 
@@ -566,12 +662,43 @@ def _verify(path: str, label: str) -> None:
     print(f"[SELFTEST] {label}: rms={rms:.1f} -> {'OK ✅' if rms > 30 else 'FAIL ❌'}")
 
 
+def _parse_cli(argv: list[str]) -> tuple[str | None, bool]:
+    """Parse CLI args -> (meet_url, use_xvfb).
+
+    Accepted forms (order-independent for the flag):
+      python playwright_app.py <MEET_URL>
+      python playwright_app.py headless <MEET_URL>   # invisible (Xvfb)
+      python playwright_app.py <MEET_URL> --headless
+    """
+    use_xvfb = False
+    meet_url: str | None = None
+    for a in argv:
+        if a in ("headless", "--headless", "--xvfb"):
+            use_xvfb = True
+        elif not a.startswith("-"):
+            meet_url = a  # last positional wins
+    return meet_url, use_xvfb
+
+
 if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else ""
-    if arg == "selftest":
+    args = sys.argv[1:]
+    if args and args[0] == "selftest":
         asyncio.run(selftest())
-    elif arg == "headless":
-        # Invisible run with working audio (headed Chrome inside Xvfb).
-        asyncio.run(main(use_xvfb=True))
-    else:
-        asyncio.run(main())
+        sys.exit(0)
+
+    url, xvfb_mode = _parse_cli(args)
+    if not url:
+        print("[FATAL] no meeting URL provided.\n"
+              "Usage: python playwright_app.py [headless] <MEET_URL>")
+        sys.exit(2)
+
+    try:
+        asyncio.run(main(meet_url=url, use_xvfb=xvfb_mode))
+    finally:
+        # main() has already closed the browser and torn down audio. Exiting the
+        # process here stops the Docker container (python runs as PID 1 via the
+        # entrypoint's `exec`), which is exactly what we want once the bot is
+        # alone or the meeting has ended.
+        if _in_docker():
+            print("[DOCKER] session finished -> stopping container")
+    sys.exit(0)

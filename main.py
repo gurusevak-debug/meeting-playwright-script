@@ -322,9 +322,9 @@ async def voice(client: WebSocket):
         sentence_endings = (".", "?", "!", "\n")
         try:
             # 1. get the generator object from thread
-            # gen = await asyncio.to_thread(openai_reply, history)
+            gen = await asyncio.to_thread(openai_reply, history)
 
-            gen = await asyncio.to_thread(cygnus_reply, user_text)
+            # gen = await asyncio.to_thread(cygnus_reply, user_text)
 
             # 2. we need a helper function to pull the chunks
             def get_next_chunk(g):

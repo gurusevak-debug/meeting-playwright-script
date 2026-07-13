@@ -21,6 +21,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY . .
 
+# Self-contained browser profile INSIDE the container. No host volume is mounted
+# for it — every container run gets its own fresh profile created here, and the
+# bot joins meetings without any Google login.
+ENV BOT_PROFILE_DIR=/app/bot-profile
+
 RUN mkdir -p /app/bot-profile /app/recordings && \
     chown -R pwuser:pwuser /app
 
@@ -35,25 +40,31 @@ RUN chmod +x /entrypoint.sh
 
 USER pwuser
 ENTRYPOINT ["/entrypoint.sh"]
+# The meeting URL is a required argument. Override this CMD at `docker run` time
+# with the URL to join (see below). The container exits on its own once the bot
+# leaves the meeting or is left alone, so `--rm` cleans it up automatically.
 CMD ["python", "playwright_app.py", "headless"]
 
 # # Run command
 # # 1) confirm the existing user's name/UID inside the base image
 # sudo docker run --rm mcr.microsoft.com/playwright/python:v1.48.0-jammy cat /etc/passwd | tail -5
 
-# # 2) build + run
-# sudo docker build -t meetbot . && \
+# # 2) build
+# sudo docker build -t meetbot .
+
+# # 3) run — pass the meeting URL as an argument (no profile volume is mounted;
+# #    the container creates and uses its own /app/bot-profile).
 # sudo docker run --rm -it --shm-size=1gb \
 #   --add-host=host.docker.internal:host-gateway \
 #   -e BACKEND_WS_URL="ws://host.docker.internal:8000/ws/voice" \
-#   -v "$(pwd)/bot-profile:/app/bot-profile" \
-#   meetbot
+#   meetbot python playwright_app.py headless "https://meet.google.com/khc-ffud-ywg"
 
+# # Verify audio devices only:
+# sudo docker run --rm -it --shm-size=1gb meetbot python playwright_app.py selftest
 
-# # Just To enter inside the docker container
+# # Just to enter inside the docker container
 # docker run --rm -it --shm-size=1gb \
 #   --add-host=host.docker.internal:host-gateway \
 #   -e BACKEND_WS_URL="ws://host.docker.internal:8000/ws/voice" \
-#   -v "$(pwd):/app" \
 #   --entrypoint /bin/bash \
 #   meetbot
